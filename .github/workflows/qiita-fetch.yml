@@ -3,7 +3,7 @@ name: Qiita Fetch
 on:
   schedule:
     # 毎日午前9時（日本時間）に実行する場合 (UTCでは午前0時)
-    - cron: '0 0 * * *'
+    - cron: '0 * * * *'
   workflow_dispatch: # 手動でいつでも実行できるようにするボタンを追加
 
 jobs:
