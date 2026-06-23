@@ -1,14 +1,14 @@
-name: Qiita Deploy
+name: Qiita Publish
 
 on:
   push:
     branches:
-      - main # 対象にするブランチ（必要に応じて変更してください）
+      - main
     paths:
-      - 'public/**' # Qiita CLIのデフォルトの記事格納ディレクトリを監視
+      - 'public/**'
 
 jobs:
-  deploy:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -17,12 +17,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-size: '20' # Node.jsのバージョン
+          node-version: '20'
 
       - name: Install Qiita CLI
         run: npm install -g @qiita/qiita-cli
 
-      - name: Deploy to Qiita
-        run: qiita deploy --no-browser
+      - name: Publish to Qiita
+        run: qiita publish --all
         env:
           QIITA_TOKEN: ${{ secrets.QIITA_TOKEN }}
