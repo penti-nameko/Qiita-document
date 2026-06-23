@@ -1,17 +1,15 @@
-name: Qiita Fetch
+name: Qiita Deploy
 
 on:
-  schedule:
-    # 毎日午前9時（日本時間）に実行する場合 (UTCでは午前0時)
-    - cron: '0 0 * * *'
-  workflow_dispatch: # 手動でいつでも実行できるようにするボタンを追加
+  push:
+    branches:
+      - main # 対象にするブランチ（必要に応じて変更してください）
+    paths:
+      - 'public/**' # Qiita CLIのデフォルトの記事格納ディレクトリを監視
 
 jobs:
-  fetch:
+  deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # リポジトリへの書き込み権限を明示的に付与
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,26 +17,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-size: '20' # Node.jsのバージョン
 
       - name: Install Qiita CLI
         run: npm install -g @qiita/qiita-cli
 
-      - name: Fetch from Qiita
-        run: qiita fetch
+      - name: Deploy to Qiita
+        run: qiita deploy --no-browser
         env:
           QIITA_TOKEN: ${{ secrets.QIITA_TOKEN }}
-
-      - name: Check for changes & Commit
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          
-          # 変更があるか確認
-          if [ -n "$(git status --porcelain)" ]; then
-            git add .
-            git commit -m "chore: fetch latest articles from Qiita [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
-          else
-            echo "No changes detected."
-          fi
