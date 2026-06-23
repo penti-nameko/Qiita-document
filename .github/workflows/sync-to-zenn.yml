@@ -1,4 +1,4 @@
-name: Sync to Zenn (Diff Only)
+name: Sync to Zenn (New Diff Only)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - main
     paths:
       - 'public/**/*.md'
-  workflow_dispatch: # 手動実行時は全ファイル（または未同期分）をチェック可能
+  workflow_dispatch:
 
 jobs:
   sync:
@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: qiita-repo
-          fetch-depth: 0 # 差分（git diff）を計算するために履歴をすべて取得
+          fetch-depth: 0 # 差分（git diff）計算用
 
       - name: Checkout Zenn Repo
         uses: actions/checkout@v4
@@ -25,34 +25,38 @@ jobs:
           token: ${{ secrets.ZENN_SYNC_TOKEN }}
           path: zenn-repo
 
-      - name: Copy, Convert & Format for Zenn (Diff Only)
+      - name: Copy, Convert & Format for Zenn (New Files Only)
         run: |
           mkdir -p zenn-repo/articles
           
           cd qiita-repo
           
-          # 手動実行(workflow_dispatch)の場合は全ファイルを対象にし、
-          # 通常のpushの場合は「前回のコミットからの差分(追加・変更)」のみを対象にする
+          # 手動実行時は全ファイルを走査対象にし、通常push時は直前の差分を対象にする
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual trigger: Processing all files..."
+            echo "Manual trigger: Scanning all files for unsynced articles..."
             FILES=$(find public -name "*.md")
           else
             echo "Push trigger: Detecting changed files..."
-            # HEAD~1 と HEAD の差分から、public/ 内の .md ファイルのパスを取得
             FILES=$(git diff --name-only HEAD~1 HEAD | grep '^public/.*\.md$' || true)
           fi
 
           if [ -z "$FILES" ]; then
-            echo "No markdown changes detected in this commit."
+            echo "No markdown changes detected."
             exit 0
           fi
 
-          # 変更があったファイルだけをループ処理
+          # 抽出したファイルをループ処理
           for file_path in $FILES; do
-            # ファイルが削除されたケースを除外（存在チェック）
             if [ -f "$file_path" ]; then
               file=$(basename "$file_path")
-              echo "Processing changed file: $file"
+              
+              # 【追加条件】Zennリポジトリの articles/ 内に同名ファイルが既に存在するかチェック
+              if [ -f "../zenn-repo/articles/$file" ]; then
+                echo "Skipping: $file (Already exists in Zenn repo)"
+                continue
+              fi
+
+              echo "Processing NEW file: $file"
               
               # --- 1. メタデータの抽出処理 ---
               TITLE=$(sed -n 's/^title:[[:space:]]*//p' "$file_path" | sed 's/^[ "'\'']*//;s/[ "'\'']*$//')
@@ -98,8 +102,8 @@ jobs:
           
           if [ -n "$(git status --porcelain)" ]; then
             git add articles/*.md
-            git commit -m "sync: automagic diff build from Qiita-document"
+            git commit -m "sync: automagic new items only from Qiita-document"
             git push origin main
           else
-            echo "No changes detected to sync."
+            echo "No new unsynced files found to commit."
           fi
