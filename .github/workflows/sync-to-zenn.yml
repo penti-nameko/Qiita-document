@@ -1,4 +1,4 @@
-name: Sync to Zenn
+name: Sync to Zenn (Diff Only)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - main
     paths:
       - 'public/**/*.md'
-  workflow_dispatch:
+  workflow_dispatch: # 手動実行時は全ファイル（または未同期分）をチェック可能
 
 jobs:
   sync:
@@ -16,6 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: qiita-repo
+          fetch-depth: 0 # 差分（git diff）を計算するために履歴をすべて取得
 
       - name: Checkout Zenn Repo
         uses: actions/checkout@v4
@@ -24,43 +25,55 @@ jobs:
           token: ${{ secrets.ZENN_SYNC_TOKEN }}
           path: zenn-repo
 
-      - name: Copy, Convert & Format for Zenn
+      - name: Copy, Convert & Format for Zenn (Diff Only)
         run: |
           mkdir -p zenn-repo/articles
           
-          cd qiita-repo/public
-          for file in *.md; do
-            if [ -f "$file" ]; then
-              echo "Processing: $file"
+          cd qiita-repo
+          
+          # 手動実行(workflow_dispatch)の場合は全ファイルを対象にし、
+          # 通常のpushの場合は「前回のコミットからの差分(追加・変更)」のみを対象にする
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual trigger: Processing all files..."
+            FILES=$(find public -name "*.md")
+          else
+            echo "Push trigger: Detecting changed files..."
+            # HEAD~1 と HEAD の差分から、public/ 内の .md ファイルのパスを取得
+            FILES=$(git diff --name-only HEAD~1 HEAD | grep '^public/.*\.md$' || true)
+          fi
+
+          if [ -z "$FILES" ]; then
+            echo "No markdown changes detected in this commit."
+            exit 0
+          fi
+
+          # 変更があったファイルだけをループ処理
+          for file_path in $FILES; do
+            # ファイルが削除されたケースを除外（存在チェック）
+            if [ -f "$file_path" ]; then
+              file=$(basename "$file_path")
+              echo "Processing changed file: $file"
               
-              # --- 1. メタデータの高度な抽出処理 ---
-              # タイトルを抽出（前後のクォーテーションや余計な文字を排除）
-              TITLE=$(sed -n 's/^title:[[:space:]]*//p' "$file" | sed 's/^[ "'\'']*//;s/[ "'\'']*$//')
+              # --- 1. メタデータの抽出処理 ---
+              TITLE=$(sed -n 's/^title:[[:space:]]*//p' "$file_path" | sed 's/^[ "'\'']*//;s/[ "'\'']*$//')
               [ -z "$TITLE" ] && TITLE="Untitled"
 
-              # 公開ステータス（private: false なら Zenn側は published: true）
-              IS_PRIVATE=$(sed -n 's/^private:[[:space:]]*//p' "$file" | tr -d '[:space:]')
+              IS_PRIVATE=$(sed -n 's/^private:[[:space:]]*//p' "$file_path" | tr -d '[:space:]')
               if [ "$IS_PRIVATE" = "true" ]; then
                 PUBLISHED="false"
               else
                 PUBLISHED="true"
               fi
 
-              # タグ（tags）の抽出。インデントされた「- タグ名」を正確に取得してカンマ区切りにする
-              # 複数行に渡るタグを配列 ["タグ1", "タグ2"] 形式に整形
-              TOPICS=$(sed -n '/^tags:/,/^[a-zA-Z]/p' "$file" | grep '^[[:space:]]*-' | sed 's/^[[:space:]]*-//;s/^[[:space:]]*//;s/[[:space:]]*$//' | awk '{print "\""$0"\""}' | paste -sd, -)
-              
-              # Zennはtopicsが空、または文字数が少ないとエラーになるため、空ならデフォルト値をセット
-              if [ -z "$TOPICS" ]; then
-                TOPICS='"qiita"'
-              fi
+              TOPICS=$(sed -n '/^tags:/,/^[a-zA-Z]/p' "$file_path" | grep '^[[:space:]]*-' | sed 's/^[[:space:]]*-//;s/^[[:space:]]*//;s/[[:space:]]*$//' | awk '{print "\""$0"\""}' | paste -sd, -)
+              [ -z "$TOPICS" ] && TOPICS='"qiita"'
 
               # --- 2. Zenn用フロントマターの出力 ---
-              TARGET_FILE="../../zenn-repo/articles/$file"
+              TARGET_FILE="../zenn-repo/articles/$file"
               
               echo "---" > "$TARGET_FILE"
               echo "title: \"$TITLE\"" >> "$TARGET_FILE"
-              echo "emoji: \"💻\"" >> "$TARGET_FILE" # 必要に応じてデフォルト絵文字を変更してください
+              echo "emoji: \"💻\"" >> "$TARGET_FILE"
               echo "type: \"tech\"" >> "$TARGET_FILE"
               echo "topics: [$TOPICS]" >> "$TARGET_FILE"
               echo "published: $PUBLISHED" >> "$TARGET_FILE"
@@ -68,13 +81,11 @@ jobs:
               echo "" >> "$TARGET_FILE"
 
               # --- 3. 本文のみを抽出して結合 ---
-              # 2つ目の「---」の行番号を特定し、それより下の行（本文）だけを出力
-              BODY_START=$(awk '/^---$/ {count++; if(count==2) {print NR; exit}}' "$file")
+              BODY_START=$(awk '/^---$/ {count++; if(count==2) {print NR; exit}}' "$file_path")
               if [ -n "$BODY_START" ]; then
-                tail -n +$((BODY_START + 1)) "$file" >> "$TARGET_FILE"
+                tail -n +$((BODY_START + 1)) "$file_path" >> "$TARGET_FILE"
               else
-                # 万が一フロントマターのパースに失敗した場合は丸ごとコピー
-                cat "$file" >> "$TARGET_FILE"
+                cat "$file_path" >> "$TARGET_FILE"
               fi
             fi
           done
@@ -87,7 +98,7 @@ jobs:
           
           if [ -n "$(git status --porcelain)" ]; then
             git add articles/*.md
-            git commit -m "sync: automagic build and format from Qiita-document"
+            git commit -m "sync: automagic diff build from Qiita-document"
             git push origin main
           else
             echo "No changes detected to sync."
