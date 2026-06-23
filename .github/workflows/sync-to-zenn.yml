@@ -5,8 +5,8 @@ on:
     branches:
       - main
     paths:
-      - 'public/**/*.md' # QiitaリポジトリのMarkdown変更を検知
-  workflow_dispatch: # 手動実行用
+      - 'public/**/*.md'
+  workflow_dispatch:
 
 jobs:
   sync:
@@ -24,35 +24,58 @@ jobs:
           token: ${{ secrets.ZENN_SYNC_TOKEN }}
           path: zenn-repo
 
-      - name: Copy and Convert Markdown for Zenn
+      - name: Copy, Convert & Format for Zenn
         run: |
           mkdir -p zenn-repo/articles
           
-          # Qiitaのpublicフォルダ内のmdファイルを処理
           cd qiita-repo/public
           for file in *.md; do
             if [ -f "$file" ]; then
-              echo "Processing $file..."
+              echo "Processing: $file"
               
-              # Qiitaのタイトル行（# タイトル）を抽出してZennのフロントマター用タイトルにする
-              TITLE=$(grep -m 1 '^# ' "$file" | sed 's/^# //')
-              if [ -z "$TITLE" ]; then
-                TITLE="Untilted Article"
+              # --- 1. メタデータの高度な抽出処理 ---
+              # タイトルを抽出（前後のクォーテーションや余計な文字を排除）
+              TITLE=$(sed -n 's/^title:[[:space:]]*//p' "$file" | sed 's/^[ "'\'']*//;s/[ "'\'']*$//')
+              [ -z "$TITLE" ] && TITLE="Untitled"
+
+              # 公開ステータス（private: false なら Zenn側は published: true）
+              IS_PRIVATE=$(sed -n 's/^private:[[:space:]]*//p' "$file" | tr -d '[:space:]')
+              if [ "$IS_PRIVATE" = "true" ]; then
+                PUBLISHED="false"
+              else
+                PUBLISHED="true"
               fi
+
+              # タグ（tags）の抽出。インデントされた「- タグ名」を正確に取得してカンマ区切りにする
+              # 複数行に渡るタグを配列 ["タグ1", "タグ2"] 形式に整形
+              TOPICS=$(sed -n '/^tags:/,/^[a-zA-Z]/p' "$file" | grep '^[[:space:]]*-' | sed 's/^[[:space:]]*-//;s/^[[:space:]]*//;s/[[:space:]]*$//' | awk '{print "\""$0"\""}' | paste -sd, -)
               
-              # Zenn用のファイル書き出し（フロントマターの付与）
-              # ※絵文字(emoji)やトピックス(topics)は必要に応じてデフォルト値を変更してください
-              echo "---" > "../../zenn-repo/articles/$file"
-              echo "title: \"$TITLE\"" >> "../../zenn-repo/articles/$file"
-              echo "emoji: \"📝\"" >> "../../zenn-repo/articles/$file"
-              echo "type: \"tech\"" >> "../../zenn-repo/articles/$file"
-              echo "topics: [\"qiita\"]" >> "../../zenn-repo/articles/$file"
-              echo "published: true" >> "../../zenn-repo/articles/$file"
-              echo "---" >> "../../zenn-repo/articles/$file"
-              echo "" >> "../../zenn-repo/articles/$file"
+              # Zennはtopicsが空、または文字数が少ないとエラーになるため、空ならデフォルト値をセット
+              if [ -z "$TOPICS" ]; then
+                TOPICS='"qiita"'
+              fi
+
+              # --- 2. Zenn用フロントマターの出力 ---
+              TARGET_FILE="../../zenn-repo/articles/$file"
               
-              # 本文のコピー（Qiitaのメタデータブロック等の不要な部分があれば除外できますが、ここでは丸ごとコピーします）
-              cat "$file" >> "../../zenn-repo/articles/$file"
+              echo "---" > "$TARGET_FILE"
+              echo "title: \"$TITLE\"" >> "$TARGET_FILE"
+              echo "emoji: \"💻\"" >> "$TARGET_FILE" # 必要に応じてデフォルト絵文字を変更してください
+              echo "type: \"tech\"" >> "$TARGET_FILE"
+              echo "topics: [$TOPICS]" >> "$TARGET_FILE"
+              echo "published: $PUBLISHED" >> "$TARGET_FILE"
+              echo "---" >> "$TARGET_FILE"
+              echo "" >> "$TARGET_FILE"
+
+              # --- 3. 本文のみを抽出して結合 ---
+              # 2つ目の「---」の行番号を特定し、それより下の行（本文）だけを出力
+              BODY_START=$(awk '/^---$/ {count++; if(count==2) {print NR; exit}}' "$file")
+              if [ -n "$BODY_START" ]; then
+                tail -n +$((BODY_START + 1)) "$file" >> "$TARGET_FILE"
+              else
+                # 万が一フロントマターのパースに失敗した場合は丸ごとコピー
+                cat "$file" >> "$TARGET_FILE"
+              fi
             fi
           done
 
@@ -64,8 +87,8 @@ jobs:
           
           if [ -n "$(git status --porcelain)" ]; then
             git add articles/*.md
-            git commit -m "sync: auto sync articles from Qiitaリポジトリ"
+            git commit -m "sync: automagic build and format from Qiita-document"
             git push origin main
           else
-            echo "No changes to sync."
+            echo "No changes detected to sync."
           fi
