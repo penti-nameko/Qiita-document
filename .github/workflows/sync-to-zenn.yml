@@ -1,4 +1,4 @@
-name: Sync to Zenn (New Diff Only)
+name: Sync to Zenn (Smart Diff Sync)
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: qiita-repo
-          fetch-depth: 0 # 差分（git diff）計算用
+          fetch-depth: 0 # 差分計算用
 
       - name: Checkout Zenn Repo
         uses: actions/checkout@v4
@@ -25,15 +25,15 @@ jobs:
           token: ${{ secrets.ZENN_SYNC_TOKEN }}
           path: zenn-repo
 
-      - name: Copy, Convert & Format for Zenn (New Files Only)
+      - name: Copy, Convert & Format for Zenn
         run: |
           mkdir -p zenn-repo/articles
           
           cd qiita-repo
           
-          # 手動実行時は全ファイルを走査対象にし、通常push時は直前の差分を対象にする
+          # 通常push時は「直前のコミットの差分」のみ、手動実行時は「全ファイル」を対象にする
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual trigger: Scanning all files for unsynced articles..."
+            echo "Manual trigger: Processing all files to force redeploy..."
             FILES=$(find public -name "*.md")
           else
             echo "Push trigger: Detecting changed files..."
@@ -45,18 +45,13 @@ jobs:
             exit 0
           fi
 
-          # 抽出したファイルをループ処理
           for file_path in $FILES; do
             if [ -f "$file_path" ]; then
               file=$(basename "$file_path")
               
-              # 【追加条件】Zennリポジトリの articles/ 内に同名ファイルが既に存在するかチェック
-              if [ -f "../zenn-repo/articles/$file" ]; then
-                echo "Skipping: $file (Already exists in Zenn repo)"
-                continue
-              fi
-
-              echo "Processing NEW file: $file"
+              # 💡 【変更点】ファイルの存在チェックによるスキップを撤廃。
+              # 差分があるもの（または手動実行での全ファイル）を「常に上書き」してZennに通知させる。
+              echo "Processing file: $file"
               
               # --- 1. メタデータの抽出処理 ---
               TITLE=$(sed -n 's/^title:[[:space:]]*//p' "$file_path" | sed 's/^[ "'\'']*//;s/[ "'\'']*$//')
@@ -100,10 +95,11 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
+          # 変更（上書き含む）があったファイルがあればプッシュ
           if [ -n "$(git status --porcelain)" ]; then
             git add articles/*.md
-            git commit -m "sync: automagic new items only from Qiita-document"
+            git commit -m "sync: smart update from Qiita-document"
             git push origin main
           else
-            echo "No new unsynced files found to commit."
+            echo "No changes detected to push."
           fi
