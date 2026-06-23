@@ -1,0 +1,71 @@
+name: Sync to Zenn
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'public/**/*.md' # QiitaリポジトリのMarkdown変更を検知
+  workflow_dispatch: # 手動実行用
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Qiita Repo
+        uses: actions/checkout@v4
+        with:
+          path: qiita-repo
+
+      - name: Checkout Zenn Repo
+        uses: actions/checkout@v4
+        with:
+          repository: penti-nameko/Zenn_document
+          token: ${{ secrets.ZENN_SYNC_TOKEN }}
+          path: zenn-repo
+
+      - name: Copy and Convert Markdown for Zenn
+        run: |
+          mkdir -p zenn-repo/articles
+          
+          # Qiitaのpublicフォルダ内のmdファイルを処理
+          cd qiita-repo/public
+          for file in *.md; do
+            if [ -f "$file" ]; then
+              echo "Processing $file..."
+              
+              # Qiitaのタイトル行（# タイトル）を抽出してZennのフロントマター用タイトルにする
+              TITLE=$(grep -m 1 '^# ' "$file" | sed 's/^# //')
+              if [ -z "$TITLE" ]; then
+                TITLE="Untilted Article"
+              fi
+              
+              # Zenn用のファイル書き出し（フロントマターの付与）
+              # ※絵文字(emoji)やトピックス(topics)は必要に応じてデフォルト値を変更してください
+              echo "---" > "../../zenn-repo/articles/$file"
+              echo "title: \"$TITLE\"" >> "../../zenn-repo/articles/$file"
+              echo "emoji: \"📝\"" >> "../../zenn-repo/articles/$file"
+              echo "type: \"tech\"" >> "../../zenn-repo/articles/$file"
+              echo "topics: [\"qiita\"]" >> "../../zenn-repo/articles/$file"
+              echo "published: true" >> "../../zenn-repo/articles/$file"
+              echo "---" >> "../../zenn-repo/articles/$file"
+              echo "" >> "../../zenn-repo/articles/$file"
+              
+              # 本文のコピー（Qiitaのメタデータブロック等の不要な部分があれば除外できますが、ここでは丸ごとコピーします）
+              cat "$file" >> "../../zenn-repo/articles/$file"
+            fi
+          done
+
+      - name: Push to Zenn Repo
+        run: |
+          cd zenn-repo
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          if [ -n "$(git status --porcelain)" ]; then
+            git add articles/*.md
+            git commit -m "sync: auto sync articles from Qiitaリポジトリ"
+            git push origin main
+          else
+            echo "No changes to sync."
+          fi
