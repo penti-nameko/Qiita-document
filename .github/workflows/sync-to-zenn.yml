@@ -1,4 +1,4 @@
-name: Sync to Zenn (Smart Diff Sync)
+name: Sync to Zenn (2 Oldest Unsynced Only)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - main
     paths:
       - 'public/**/*.md'
-  workflow_dispatch:
+  workflow_dispatch: # 主にこれを使って手動で2件ずつ進めます
 
 jobs:
   sync:
@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: qiita-repo
-          fetch-depth: 0 # 差分計算用
+          fetch-depth: 0
 
       - name: Checkout Zenn Repo
         uses: actions/checkout@v4
@@ -25,67 +25,89 @@ jobs:
           token: ${{ secrets.ZENN_SYNC_TOKEN }}
           path: zenn-repo
 
-      - name: Copy, Convert & Format for Zenn
+      - name: Find 2 Oldest Unsynced Files & Convert
         run: |
           mkdir -p zenn-repo/articles
           
-          cd qiita-repo
+          cd qiita-repo/public
           
-          # 通常push時は「直前のコミットの差分」のみ、手動実行時は「全ファイル」を対象にする
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual trigger: Processing all files to force redeploy..."
-            FILES=$(find public -name "*.md")
-          else
-            echo "Push trigger: Detecting changed files..."
-            FILES=$(git diff --name-only HEAD~1 HEAD | grep '^public/.*\.md$' || true)
-          fi
+          # 1. フォルダ内の全mdファイルを、Gitのコミット履歴を遡って「古い順（最古が上）」に並び替える
+          #    ※git logで各ファイルの最初のコミット日時を取得してソートします
+          echo "Calculating file creation dates..."
+          for f in *.md; do
+            if [ -f "$f" ]; then
+              # ファイルの最古のコミットタイムスタンプを取得（なければ現在の時間を仮置き）
+              TS=$(git log --follow --format=%at -- "$f" | tail -n 1)
+              [ -z "$TS" ] && TS=$(date +%s)
+              echo "$TS $f"
+            fi
+          done | sort -n | awk '{print $2}' > /tmp/all_files_oldest_first.txt
 
-          if [ -z "$FILES" ]; then
-            echo "No markdown changes detected."
+          # 2. 古い順のリストを上から走査し、Zennリポに存在しない（またはWebに未デプロイの）ファイルを特定する
+          COUNT=0
+          TARGET_FILES=""
+          
+          while IFS= read -r file; do
+            # 2件見つかったら走査を終了
+            if [ "$COUNT" -ge 2 ]; then
+              break
+            fi
+
+            # 【判定条件】Zenn側のリポジトリにファイルがまだ無い、
+            # もしくは前回のデプロイで弾かれて浮いている（それを救済するため、手動実行時は上書きも許容したい場合は条件を調整できますが、
+            # 今回は「ファイル自体が存在しないもの」を最優先で2件見つけます）
+            if [ ! -f "../../zenn-repo/articles/$file" ]; then
+              TARGET_FILES="$TARGET_FILES $file"
+              COUNT=$((COUNT + 1))
+            fi
+          done < /tmp/all_files_oldest_first.txt
+
+          if [ -z "$TARGET_FILES" ]; then
+            echo "✨ All articles have already been synced to the Zenn repository!"
             exit 0
           fi
 
-          for file_path in $FILES; do
-            if [ -f "$file_path" ]; then
-              file=$(basename "$file_path")
-              
-              # 💡 【変更点】ファイルの存在チェックによるスキップを撤廃。
-              # 差分があるもの（または手動実行での全ファイル）を「常に上書き」してZennに通知させる。
-              echo "Processing file: $file"
-              
-              # --- 1. メタデータの抽出処理 ---
-              TITLE=$(sed -n 's/^title:[[:space:]]*//p' "$file_path" | sed 's/^[ "'\'']*//;s/[ "'\'']*$//')
-              [ -z "$TITLE" ] && TITLE="Untitled"
+          echo "🎯 Found oldest unsynced files to process: $TARGET_FILES"
 
-              IS_PRIVATE=$(sed -n 's/^private:[[:space:]]*//p' "$file_path" | tr -d '[:space:]')
-              if [ "$IS_PRIVATE" = "true" ]; then
-                PUBLISHED="false"
-              else
-                PUBLISHED="true"
-              fi
+          # 3. 選ばれた最大2件のファイルを処理
+          for file in $TARGET_FILES; do
+            file_path="$file" # すでにcd publicしているので相対パス
+            echo "Processing: $file"
+            
+            # --- メタデータの抽出処理 ---
+            TITLE=$(sed -n 's/^title:[[:space:]]*//p' "$file_path" | sed 's/^[ "'\'']*//;s/[ "'\'']*$//')
+            [ -z "$TITLE" ] && TITLE="Untitled"
 
-              TOPICS=$(sed -n '/^tags:/,/^[a-zA-Z]/p' "$file_path" | grep '^[[:space:]]*-' | sed 's/^[[:space:]]*-//;s/^[[:space:]]*//;s/[[:space:]]*$//' | awk '{print "\""$0"\""}' | paste -sd, -)
-              [ -z "$TOPICS" ] && TOPICS='"qiita"'
+            IS_PRIVATE=$(sed -n 's/^private:[[:space:]]*//p' "$file_path" | tr -d '[:space:]')
+            if [ "$IS_PRIVATE" = "true" ]; then
+              PUBLISHED="false"
+            else
+              PUBLISHED="true"
+            fi
 
-              # --- 2. Zenn用フロントマターの出力 ---
-              TARGET_FILE="../zenn-repo/articles/$file"
-              
-              echo "---" > "$TARGET_FILE"
-              echo "title: \"$TITLE\"" >> "$TARGET_FILE"
-              echo "emoji: \"💻\"" >> "$TARGET_FILE"
-              echo "type: \"tech\"" >> "$TARGET_FILE"
-              echo "topics: [$TOPICS]" >> "$TARGET_FILE"
-              echo "published: $PUBLISHED" >> "$TARGET_FILE"
-              echo "---" >> "$TARGET_FILE"
-              echo "" >> "$TARGET_FILE"
+            TOPICS=$(sed -n '/^tags:/,/^[a-zA-Z]/p' "$file_path" | grep '^[[:space:]]*-' | sed 's/^[[:space:]]*-//;s/^[[:space:]]*//;s/[[:space:]]*$//' | awk '{print "\""$0"\""}' | paste -sd, -)
+            [ -z "$TOPICS" ] && TOPICS='"qiita"'
 
-              # --- 3. 本文のみを抽出して結合 ---
-              BODY_START=$(awk '/^---$/ {count++; if(count==2) {print NR; exit}}' "$file_path")
-              if [ -n "$BODY_START" ]; then
-                tail -n +$((BODY_START + 1)) "$file_path" >> "$TARGET_FILE"
-              else
-                cat "$file_path" >> "$TARGET_FILE"
-              fi
+            # --- Zenn用フロントマターの出力 ---
+            TARGET_FILE="../../zenn-repo/articles/$file"
+            
+            echo "---" > "$TARGET_FILE"
+            echo "title: \"$TITLE\"" >> "$TARGET_FILE"
+            echo "emoji: \"💻\"" >> "$TARGET_FILE"
+            echo "type: \"tech\"" >> "$TARGET_FILE"
+            echo "topics: [$TOPICS]" >> "$TARGET_FILE"
+            echo "published: $PUBLISHED" >> "$TARGET_FILE"
+            # タイムスタンプを仕込んで確実に差分を発生させデプロイをキック
+            echo "# synced_at: $(date +'%Y-%m-%d %H:%M:%S')" >> "$TARGET_FILE"
+            echo "---" >> "$TARGET_FILE"
+            echo "" >> "$TARGET_FILE"
+
+            # --- 本文のみを抽出して結合 ---
+            BODY_START=$(awk '/^---$/ {count++; if(count==2) {print NR; exit}}' "$file_path")
+            if [ -n "$BODY_START" ]; then
+              tail -n +$((BODY_START + 1)) "$file_path" >> "$TARGET_FILE"
+            else
+              cat "$file_path" >> "$TARGET_FILE"
             fi
           done
 
@@ -95,11 +117,10 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # 変更（上書き含む）があったファイルがあればプッシュ
           if [ -n "$(git status --porcelain)" ]; then
             git add articles/*.md
-            git commit -m "sync: smart update from Qiita-document"
+            git commit -m "sync: 2 oldest unsynced articles from Qiita"
             git push origin main
           else
-            echo "No changes detected to push."
+            echo "No changes to push."
           fi
