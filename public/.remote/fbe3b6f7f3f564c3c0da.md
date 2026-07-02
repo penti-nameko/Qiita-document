@@ -12,6 +12,8 @@ id: fbe3b6f7f3f564c3c0da
 organization_url_name: unipro-tech
 slide: false
 ignorePublish: false
+posting_campaign_uuid: 243cd803a05f22f23611
+agreed_posting_campaign_term: true
 ---
 # 0.初めに
 Kubernetes（k8s）のエコシステムは広大すぎて、何から触ればいいのか迷いがちです。
